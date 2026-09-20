@@ -2,8 +2,8 @@
 
 ## Architecture and Implementation Proposal
 
-**Status:** Draft for design review  
-**Working extension ID:** `gammamarket`  
+**Status:** Supporting rationale synchronized with the corrected Phase 0 contract
+**Extension ID:** `gammamarkets`
 **Implementation:** Standard Python LNbits extension  
 **Primary protocol:** GammaMarkets marketplace protocol  
 **Compatibility protocols:** NIP-99 Classified Listings and NIP-15 Nostr Marketplace  
@@ -17,6 +17,10 @@
 - [NIP-44 Encrypted Payloads](https://github.com/nostr-protocol/nips/blob/master/44.md)
 - [NIP-59 Gift Wrap](https://github.com/nostr-protocol/nips/blob/master/59.md)
 - [NIP-89 Recommended Application Handlers](https://github.com/nostr-protocol/nips/blob/master/89.md)
+
+`technical-specification.md` is the normative build contract. If an example or phase
+sketch in this rationale differs, the technical specification wins; the mismatch must be
+corrected rather than delegated to implementation.
 
 ---
 
@@ -39,7 +43,12 @@ The extension will be a new commerce system, not a thin NIP-99 publisher. The di
 
 ### Recommended architectural decision
 
-Build a standard Python LNbits extension with a portable domain core and a direct, relay-aware Nostr transport based on `nostr-sdk`. Retain an optional `nostrclient` transport adapter for public catalog fan-out, but do not make the current `nostrclient` extension a hard dependency for NIP-17 delivery until it supports recipient-specific relay routing.
+Build a standard Python LNbits extension with a portable domain core and a qualified,
+direct, relay-aware `nostr-sdk` transport. `nostrclient` is a lifecycle/reconnection
+reference and a future optional public-catalog adapter only after it exposes targeted
+publication, positive relay OK results, and merchant-scoped authorization. A
+`nostrrelay` adapter may be evaluated under the same interface, but no API has been
+qualified. Neither is a v1 hard dependency or a current NIP-17 route.
 
 ### Why Python rather than the current LNbits WASM runtime
 
@@ -218,7 +227,7 @@ This proposal (the one you are reading) supersedes the browser-relay transport r
 
 ### 4.1 Goals
 
-The first production release should:
+Across staged Releases A–C, the v1 roadmap should:
 
 1. Provide a complete GammaMarkets merchant implementation for Lightning payments through LNbits.
 2. Publish valid NIP-99 product listings.
@@ -357,7 +366,7 @@ flowchart TB
         PaymentAdapter[LNbits payment adapter]
         KeyStore[Merchant key store]
         RelayTransport[Relay-aware Nostr transport]
-        Websocket[Browser status publisher]
+        StatusAPI[Browser status polling API]
     end
 
     HTTP --> Application
@@ -386,7 +395,7 @@ The domain layer must not import FastAPI, LNbits, SQL, `nostr-sdk`, or UI code.
 ## 8. Proposed Package Structure
 
 ```text
-gammamarket/
+gammamarkets/
 ├── __init__.py
 ├── config.py
 ├── dependencies.py
@@ -433,10 +442,8 @@ gammamarket/
 │   ├── keys.py
 │   ├── nostr_transport.py
 │   ├── direct_transport.py
-│   ├── nostrclient_transport.py
-│   ├── repositories.py
-│   └── websocket.py
-├── templates/gammamarket/
+│   └── repositories.py
+├── templates/gammamarkets/
 ├── static/
 └── tests/
     ├── fixtures/
@@ -595,6 +602,9 @@ Order
 - selected_shipping_option_id
 - payment_hash
 - invoice_expiry
+- public_token_hash and protected public_token_enc with expiry
+- checkout_scope_hash for web-order quotas
+- payment_exception reason and resolution
 - created_at
 - updated_at
 ```
@@ -620,16 +630,21 @@ OutboxEvent
 - aggregate_revision
 - event_kind
 - event_address
-- unsigned_event_json
-- state: pending | publishing | partially_published | published | superseded | failed
+- public intent or encrypted private descriptor
+- state: pending | claimed | publishing | partially_published | published | superseded | failed
 - attempts
 - next_attempt_at
+- claimed_until
+- claim_token
 - created_at
 
 RelayPublication
 - outbox_event_id
+- delivery_copy
 - relay_url
-- accepted
+- event_id
+- attempt_no
+- result: accepted | rejected | timeout
 - message
 - attempted_at
 ```
@@ -648,7 +663,8 @@ The outbox should store publication intent or an unsigned event rather than a lo
 | Merchant app recommendation | `31989` | None |
 | Application descriptor | `31990` | None |
 | Product | `30402` | `30018` |
-| Draft/inactive product | `30403` or visibility/status transition | `5` deletion or inactive product policy |
+| Local draft | Not published in v1 | Not published |
+| Inactive/deleted product | `30402` sold/visibility transition or ordered kind `5` tombstone | inactive projection or kind `5` |
 | Collection | `30405` | Optional catalog-to-stall projection |
 | Shipping option | `30406` | Embedded stall zone and product surcharge |
 | Marketplace presentation | Application descriptor/site integration | Optional `30019` |
@@ -667,14 +683,17 @@ The outbox should store publication intent or an unsigned event rather than a lo
 
 ### 10.3 Stable identifiers
 
-Use one randomly generated internal product identifier as the default `d` value for both product event kinds:
+Generate a random protocol `d_tag` independently of the internal product primary key.
+Simple products may use the same valid protocol identifier in both projections:
 
 ```text
-30018:<merchant-pubkey>:<product-d>
-30402:<merchant-pubkey>:<product-d>
+30018:<merchant-pubkey>:<nip15-product-id>
+30402:<merchant-pubkey>:<gamma-d-tag>
 ```
 
-The addresses do not collide because event kind is part of the address. Imported NIP-15 products should retain their existing product ID as the `d` value unless invalid or conflicting.
+The addresses do not collide because event kind is part of the address. Imported NIP-15
+IDs are retained only when they satisfy the normative validation/collision rules; the
+internal UUID is never exposed as a default protocol identifier.
 
 ### 10.4 Lossy NIP-15 projection
 
@@ -686,6 +705,9 @@ The compatibility adapter must document information that cannot be represented e
 - Independent third-party shipping options must be flattened into stall zones and product surcharges.
 - Gamma visibility states reduce to active/inactive or deletion behavior.
 - Rich Gamma fulfillment states reduce to paid/shipped booleans.
+- Standard NIP-15's opaque physical address cannot prove country/region coverage;
+  automatic physical checkout requires the separately validated machine-readable
+  extension, so ordinary opaque-address physical orders are rejected before reservation.
 
 The default compatibility policy should use one NIP-15 stall per internal catalog. Additional collections remain Gamma-only unless a merchant explicitly maps a collection to a separate NIP-15 catalog/stall.
 
@@ -718,7 +740,7 @@ flowchart TB
     Transport[NostrTransport interface]
     PublicPool[Public catalog relay pool]
     InboxPool[Recipient inbox relay pool]
-    NostrClient[Optional nostrclient adapter]
+    NostrClient[Future qualified adapter]
     Relays[(Nostr relays)]
 
     Publish --> Transport
@@ -730,21 +752,21 @@ flowchart TB
     PublicPool -. optional .-> NostrClient
 ```
 
-The first complete implementation should include a direct `nostr-sdk` transport because Gamma NIP-17 publishing must target the recipient's kind-10050 relays. An optional `nostrclient` adapter may handle public catalog events when its configured relay fan-out is desirable.
+The v1 baseline is a qualified direct `nostr-sdk` transport because Gamma NIP-17
+publishing must target the recipient's kind-10050 relays and retain positive per-target
+OK evidence. Deterministic local accepting/rejecting/silent relays are the authoritative
+contract tests. `wss://nostr.net` is an optional external smoke target for an ephemeral,
+non-sensitive event only; it is not a production default or NIP-17 inbox assumption.
 
-### 11.3 Why `nostrclient` is not initially mandatory
+### 11.3 Optional transport adapters
 
-The current extension is useful and should be reused where its behavior matches the requirement. It should not be forced into NIP-17 semantics it does not expose.
-
-A future `nostrclient` enhancement could add:
-
-- target relay URLs per publication;
-- durable named subscriptions owned by another extension;
-- user/merchant scoped authorization;
-- relay `OK` summaries;
-- kind-10050 inbox relay helpers.
-
-Once those exist, the direct transport can be replaced without changing the application services.
+The checked-out `nostrclient` is useful reference code for lifecycle and reconnection,
+but its current pool fan-out is not NIP-17 routing. It becomes eligible as an optional
+public-catalog adapter only after it supplies target relay URLs per publication, durable
+owned subscriptions, merchant-scoped authorization, and positive relay OK summaries.
+A `nostrrelay` extension may be evaluated against the same interface, but no API was
+available during correction and this proposal makes no capability claim. Either adapter
+must pass the same routing/ACK tests before use.
 
 ---
 
@@ -896,7 +918,7 @@ sequenceDiagram
     participant Orders as Order service
     participant Inventory as Inventory service
     participant LNbits as LNbits
-    participant Status as Browser WebSocket
+    participant Status as Token-gated status API
 
     Buyer->>Web: Open product address
     Web->>API: Load current public product
@@ -908,7 +930,7 @@ sequenceDiagram
     LNbits-->>Web: BOLT11 and expiry
     Buyer->>LNbits: Pay invoice
     LNbits->>Orders: Invoice-paid event
-    Orders->>Status: Publish confirmed state
+    Web->>Status: Poll with X-Order-Token
     Status-->>Web: Payment confirmed
 ```
 
@@ -1022,7 +1044,11 @@ Settlement must atomically:
 
 ## 18. Background Tasks
 
-The extension should register permanent, uniquely named tasks for:
+`gammamarkets_start()` performs bounded synchronous registration only. Managed tasks do
+network and reconciliation work; checkout and subscriptions remain behind a readiness
+gate until startup reconciliation completes. Every task/client cleans up in `finally`
+because process shutdown may cancel tasks without invoking the extension stop hook.
+The extension registers permanent, uniquely named tasks for:
 
 ### 18.1 Nostr connection manager
 
@@ -1042,12 +1068,12 @@ The extension should register permanent, uniquely named tasks for:
 
 ### 18.3 Outbox publisher
 
-- Claim pending outbox rows.
-- Build current events.
+- Claim due `pending|partially_published` rows with lease deadlines and fencing tokens.
+- Build current events; retain canonical private rumor identity across retries.
 - Sign immediately before publication.
-- Record per-relay acknowledgments.
-- Retry transient failures.
-- Mark superseded public-event revisions.
+- Record positive/negative/timeout results per copy, target, event, and attempt.
+- Retry only targets without positive OK evidence; reconstruct stale claims durably.
+- Mark superseded public-event revisions; never supersede order messages.
 
 ### 18.4 Invoice-paid listener
 
@@ -1071,11 +1097,12 @@ The extension should register permanent, uniquely named tasks for:
 
 ### 18.7 Email notification worker
 
-- Claim durable queued notification rows.
-- Deliver through the host's configured SMTP service; the extension stores no SMTP credentials.
-- Send merchant order alerts and customer opt-in status emails.
-- Retry transient failures with bounded backoff; surface permanent failures.
-- Rate-limit per recipient and per merchant; dedupe repeated state transitions.
+- Claim durable per-recipient notification rows with lease/fencing.
+- Deliver through host `send_email`; the extension stores no SMTP credentials.
+- Treat only `True` as sent; retry `False`/exception as unclassified failures with a bound.
+- Suppress disabled/revoked sends explicitly; never mark them sent.
+- Render customer links from the valid protected token copy; erase it on expiry/revocation.
+- Rate-limit per recipient and merchant; dedupe intent without claiming exactly-once SMTP.
 
 A scheduled reconciliation path is necessary because an application crash can occur between Lightning settlement and local event handling.
 
@@ -1088,28 +1115,28 @@ The exact request and response schemas should be defined in OpenAPI during imple
 ### 19.1 Merchant routes
 
 ```text
-POST   /gammamarket/api/v1/merchants
-GET    /gammamarket/api/v1/merchants/current
-PATCH  /gammamarket/api/v1/merchants/{merchant_id}
-POST   /gammamarket/api/v1/merchants/{merchant_id}/keys/import
-POST   /gammamarket/api/v1/merchants/{merchant_id}/publish
-GET    /gammamarket/api/v1/merchants/{merchant_id}/relay-health
-GET    /gammamarket/api/v1/merchants/{merchant_id}/notifications
-PATCH  /gammamarket/api/v1/merchants/{merchant_id}/notifications
-POST   /gammamarket/api/v1/merchants/{merchant_id}/notifications/test
+POST   /gammamarkets/api/v1/merchants
+GET    /gammamarkets/api/v1/merchants/current
+PATCH  /gammamarkets/api/v1/merchants/{merchant_id}
+POST   /gammamarkets/api/v1/merchants/{merchant_id}/keys/import
+POST   /gammamarkets/api/v1/merchants/{merchant_id}/publish
+GET    /gammamarkets/api/v1/merchants/{merchant_id}/relay-health
+GET    /gammamarkets/api/v1/merchants/{merchant_id}/notifications
+PATCH  /gammamarkets/api/v1/merchants/{merchant_id}/notifications
+POST   /gammamarkets/api/v1/merchants/{merchant_id}/notifications/test
 ```
 
 ### 19.2 Catalog routes
 
 ```text
-GET    /gammamarket/api/v1/catalogs
-POST   /gammamarket/api/v1/catalogs
-PATCH  /gammamarket/api/v1/catalogs/{catalog_id}
-GET    /gammamarket/api/v1/products
-POST   /gammamarket/api/v1/products
-GET    /gammamarket/api/v1/products/{product_id}
-PATCH  /gammamarket/api/v1/products/{product_id}
-DELETE /gammamarket/api/v1/products/{product_id}
+GET    /gammamarkets/api/v1/catalogs
+POST   /gammamarkets/api/v1/catalogs
+PATCH  /gammamarkets/api/v1/catalogs/{catalog_id}
+GET    /gammamarkets/api/v1/products
+POST   /gammamarkets/api/v1/products
+GET    /gammamarkets/api/v1/products/{product_id}
+PATCH  /gammamarkets/api/v1/products/{product_id}
+DELETE /gammamarkets/api/v1/products/{product_id}
 ```
 
 Collections, shipping options, variations, and publication status receive equivalent authenticated routes.
@@ -1117,35 +1144,40 @@ Collections, shipping options, variations, and publication status receive equiva
 ### 19.3 Order routes
 
 ```text
-GET    /gammamarket/api/v1/orders
-GET    /gammamarket/api/v1/orders/{order_id}
-POST   /gammamarket/api/v1/orders/{order_id}/status
-POST   /gammamarket/api/v1/orders/{order_id}/shipping
-POST   /gammamarket/api/v1/orders/{order_id}/cancel
+GET    /gammamarkets/api/v1/orders
+GET    /gammamarkets/api/v1/orders/{order_id}
+POST   /gammamarkets/api/v1/orders/{order_id}/status
+POST   /gammamarkets/api/v1/orders/{order_id}/shipping
+POST   /gammamarkets/api/v1/orders/{order_id}/cancel
+POST   /gammamarkets/api/v1/orders/{order_id}/public-token/reissue
 ```
 
 ### 19.4 Public routes
 
 ```text
-GET    /gammamarket/api/v1/public/merchants/{merchant_id}
-GET    /gammamarket/api/v1/public/products/{product_id}
-GET    /gammamarket/api/v1/public/collections/{collection_id}
-GET    /gammamarket/api/v1/public/shipping/{shipping_id}
-POST   /gammamarket/api/v1/public/checkout
-GET    /gammamarket/api/v1/public/orders/{public_token}
-POST   /gammamarket/api/v1/public/order-email-opt-out
+GET    /gammamarkets/api/v1/public/merchants/{merchant_id}
+GET    /gammamarkets/api/v1/public/products/{product_id}
+GET    /gammamarkets/api/v1/public/collections/{collection_id}
+GET    /gammamarkets/api/v1/public/shipping/{shipping_id}
+POST   /gammamarkets/api/v1/public/checkout
+GET    /gammamarkets/api/v1/public/order-status          X-Order-Token header
+POST   /gammamarkets/api/v1/public/order-email-opt-out   X-Order-Token header
+GET    /gammamarkets/p/{naddr}                           NIP-89 handler
+GET    /gammamarkets/order                               token in URL fragment only
 ```
 
-Public order lookups must use high-entropy, revocable tokens rather than sequential order IDs.
+Public order lookups use high-entropy, revocable tokens in a redacted header, never in a
+request path or query. The magic link uses `/gammamarkets/order#<token>`; page code
+removes the fragment before polling.
 
 ### 19.5 Migration routes
 
 ```text
-POST   /gammamarket/api/v1/import/nostrmarket/preview
-POST   /gammamarket/api/v1/import/nostrmarket/execute
-POST   /gammamarket/api/v1/import/nostr/preview
-POST   /gammamarket/api/v1/import/nostr/execute
-GET    /gammamarket/api/v1/import/{job_id}
+POST   /gammamarkets/api/v1/import/nostrmarket/preview
+POST   /gammamarkets/api/v1/import/nostrmarket/execute
+POST   /gammamarkets/api/v1/import/nostr/preview
+POST   /gammamarkets/api/v1/import/nostr/execute
+GET    /gammamarkets/api/v1/import/{job_id}
 ```
 
 Migration must separate preview, validation, execution, and cutover confirmation.
@@ -1197,16 +1229,14 @@ flowchart TB
 
 ### 20.3 Single-writer rule
 
-After cutover, the old `nostrmarket` extension must not continue publishing the same merchant/product addresses or processing orders against the same inventory.
-
-Safe options are:
-
-- deactivate the old merchant;
-- mark the imported catalog read-only in the old UI;
-- use a new merchant pubkey for the Gamma extension;
-- use different product identifiers during a temporary parallel test.
-
-A warning alone is insufficient if both extensions can still process payments against shared stock.
+Every key strategy requires an inventory-authority cutover. Freeze old new-order intake,
+inventory all old nonterminal orders and still-payable invoices, and wait/reconcile them
+or reserve/partition equivalent `legacy_liability_qty` before imported stock becomes
+sellable. A new merchant pubkey separates identity, not physical inventory. Old
+settlement handling remains active for already-issued invoices while new old-system
+orders stay disabled; released liability moves through an audited adjustment. Parallel
+operation is safe only for explicitly partitioned inventory. A warning alone is
+insufficient when two extensions can allocate the same unit.
 
 ---
 
@@ -1304,14 +1334,16 @@ outbox aggregate revision and protocol target
 
 On extension startup:
 
-1. Reconnect relays.
-2. Restore subscriptions using persisted cursors with overlap.
-3. Reprocess uncommitted inbox rows.
-4. Resume pending outbox rows.
-5. Reconcile pending invoices.
-6. Expire elapsed reservations.
+1. Register managed tasks synchronously with checkout/subscriptions disabled.
+2. Reconcile `received` orders and `creating|creation_unknown|pending` payments.
+3. Reprocess durable `received|validated` inbox rows.
+4. Reconstruct and resume `pending|partially_published` outbox rows.
+5. Expire eligible reservations.
+6. Open relay connections and restore subscriptions from completed-session cursors.
+7. Enable the readiness gate only after reconciliation succeeds.
 
-Use a small overlap when resubscribing and rely on event-ID deduplication rather than assuming relay cursors are exact.
+NIP-59 uses a three-day overlap from the last completed session start; event-ID/rumor-ID
+deduplication absorbs overlap rather than treating event timestamps as exact cursors.
 
 ### 22.4 Multi-worker behavior
 
@@ -1326,7 +1358,7 @@ Before claiming production readiness, verify LNbits deployment behavior with mul
 Golden fixtures should cover:
 
 - NIP-99 `30402` required and optional tags;
-- `30403` draft/inactive behavior;
+- local/private draft non-publication and inactive/deletion behavior;
 - Gamma `30405` collections;
 - Gamma `30406` shipping options;
 - kind-0 payment preferences;
@@ -1366,7 +1398,9 @@ Golden fixtures should cover:
 
 ### 23.4 Cross-client conformance tests
 
-At least one external GammaMarkets client and one NIP-15 client should be included in manual or automated interoperability testing.
+Release B gates an external GammaMarkets client; Release C gates a NIP-15 client and
+literal wire fixtures. These later-release runs are planned during Phase 0 but are not
+Release-A prerequisites.
 
 Required scenarios:
 
@@ -1404,18 +1438,18 @@ The implementation should proceed as vertical slices. Each phase must leave an e
 
 Deliverables:
 
-- Record the exact GammaMarkets specification commit.
-- Resolve or document draft ambiguities, including collection requirements and inactive listing behavior.
-- Define merchant-side versus buyer-side conformance claims.
-- Create valid and invalid fixture events for all required kinds.
-- Define NIP-15 compatibility-loss rules.
-- Define internal order and shipping state mappings.
+- Freeze protocol/host pins and qualify the exact SDK wheels/native provenance selected by the host-compatible dependency profile.
+- Execute SDK security, FFI, NIP-44/NIP-59, targeted ACK and ephemeral external-smoke probes from technical specification §22.
+- Build valid/invalid event fixtures, literal NIP-15 DTOs, and executable state/schema recovery models.
+- Qualify host invoice/listener/task/transaction/SMTP/auth/audit/FX boundaries on SQLite and the claimed PostgreSQL topology.
+- Freeze `gammamarkets` identifiers, reverse-domain labels, release-scoped claims, and migration-liability procedure.
 
 Acceptance criteria:
 
-- Every required Gamma merchant behavior maps to a component and test.
-- No compatibility claim depends on an unstated interpretation.
-- Draft changes can be detected by updating the pinned revision deliberately.
+- All P0-01 through P0-14 criteria in the normative technical specification pass with recorded artifacts.
+- Every required Gamma merchant behavior maps to a component, release gate, and test.
+- No compatibility or security claim depends on an unstated interpretation or source-version assumption.
+- Phase 0 contains probes/fixtures/models only; production runtime work begins with Release A after acceptance.
 
 ### Phase 1: Walking skeleton — one Gamma product to one paid order
 
@@ -1433,7 +1467,7 @@ Deliverables:
 - Server-calculated invoice creation.
 - One finite-stock reservation.
 - Paid-invoice handling and confirmed order state.
-- Browser payment-status update.
+- Browser payment-status polling with a redacted token header.
 
 Acceptance criteria:
 
@@ -1723,29 +1757,26 @@ Reason not selected as the only transport:
 - complete NIP-17 behavior requires recipient-specific kind-10050 relay publication;
 - current API does not expose target relay sets and durable extension-owned subscriptions at the required granularity.
 
-It remains useful as an optional public-catalog transport and as a candidate for future enhancement.
+It remains useful as reference code and a future adapter candidate, but is not a v1 runtime dependency until it passes the normative target-routing and positive-ACK contract.
 
 ---
 
-## 27. Design Decisions Requiring Vetting
+## 27. Resolved Design Decisions and Phase 0 Qualifications
 
-The following decisions should be resolved before implementation proceeds beyond the conformance phase.
+The normative choices are frozen in `technical-specification.md` §21. In summary:
 
-1. **Extension name:** Can the project use `gammamarket`, or should the public name be "GammaMarkets-compatible Commerce" pending maintainer approval?
-2. **Specification revision:** Which GammaMarkets commit should be the initial compatibility target?
-3. **Collection requirement:** The draft describes `30405` in both required and optional contexts. This proposal implements it under the stricter interpretation.
-4. **Transport:** Should the first release embed direct `nostr-sdk` transport, enhance `nostrclient` first, or support both from the start?
-5. **Key custody:** Is local encrypted key storage acceptable for v1, or is NIP-46/host-mediated signing required before real-funds use?
-6. **NIP-15 scope:** Is catalog compatibility sufficient initially, or must NIP-04 checkout be part of the first public release?
-7. **Migration:** Should migration require explicit JSON export, direct local API support in `nostrmarket`, or both?
-8. **Late payments:** Should late payment produce a manual-resolution state, automatic fulfillment where stock remains, or an operator-configurable policy?
-9. **Reservations:** What default invoice/reservation expiry should be used, and should merchants be able to override it?
-10. **Multiple catalogs:** Should one merchant key own multiple independent catalogs, and how should those project to NIP-15 stalls?
-11. **Web checkout claim:** Should public web checkout be presented as a recommended Gamma handler through NIP-89 from the first release?
-12. **Reviews:** Are kind-31555 reviews in the first complete-Gamma milestone or a later optional milestone?
-13. **Relay authentication:** Which NIP-42 authentication modes and relay credential policies must be supported initially?
-14. **Database support:** Must the first release pass both SQLite and PostgreSQL concurrency tests?
-15. **Multi-worker deployment:** Is singleton task coordination required for the first release or only before hosted/high-availability deployments?
+1. Runtime name and coordinated identifiers are `gammamarkets`.
+2. Protocol/host revisions are pinned; the host-resolved SDK artifact remains a Phase 0 qualification, not an assumed safe version.
+3. Published products use at least one 30405 collection; local drafts are not published.
+4. Qualified direct `nostr-sdk` is the baseline; other relay extensions are adapter candidates only after identical routing/ACK tests.
+5. v1 uses the specified local AEAD key backend; external signing is deferred.
+6. Release A is web/catalog; NIP-17 is B; literal NIP-15/NIP-04 compatibility and migration are C. Opaque-address physical NIP-15 auto-checkout is not claimed.
+7. Late payment/cancellation and refund attestation follow the explicit manual exception machine.
+8. SQLite is single-process; PostgreSQL is the multi-worker target; both claimed profiles require Phase 0 transaction/fencing evidence.
+9. NIP-89 uses the declared local 30402 naddr handler.
+10. Migration safety is based on inventory liabilities and a single writer, never merely a new key.
+
+Anything still requiring measurement—SDK binaries, float-boundary precision, host audit settings, egress enforcement, external-client interoperability—is an explicit acceptance gate, not an implementation-time design choice.
 
 ---
 
@@ -1779,7 +1810,7 @@ The architecture should:
 - treat NIP-15 as a compatibility adapter;
 - use LNbits as the authoritative Lightning payment backend;
 - use direct relay-aware transport where NIP-17 requires recipient-specific relays;
-- keep `nostrclient` available as an optional adapter and future shared transport;
+- treat `nostrclient`/`nostrrelay` as future adapter candidates subject to the same routing and ACK qualification;
 - protect merchant keys behind a key-store interface;
 - use reservations, idempotency, an inbox, and an outbox from the beginning;
 - separate protocol logic from LNbits-specific infrastructure so an external application remains possible later.

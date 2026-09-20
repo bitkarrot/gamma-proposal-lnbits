@@ -1,7 +1,7 @@
-# gammamarket — Technical Specification
+# gammamarkets — Technical Specification
 
-**Status:** Reviewed draft — ready for OpenGSD initialization and Phase 0 planning
-**Audience:** Implementers of the `gammamarket` LNbits extension
+**Status:** Corrected draft — ready for Phase 0 planning; implementation remains gated on Phase 0 acceptance
+**Audience:** Implementers of the `gammamarkets` LNbits extension
 **Companion document:** `gamma-native-python-extension-proposal.md` (architecture and rationale; this document is the normative build contract)
 **Target host baseline:** LNbits `v1.6.2-rc1`, commit `e336fe1`; other versions require CI qualification
 **Primary protocol:** GammaMarkets marketplace protocol, pinned to `market-spec` commit
@@ -16,7 +16,7 @@ conflict MUST be recorded in §21 (Decisions Register) rather than resolved sile
 
 ## 1. Scope
 
-This specification defines the complete build contract for the `gammamarket` LNbits
+This specification defines the complete build contract for the `gammamarkets` LNbits
 extension:
 
 - canonical domain model and persistence schema;
@@ -43,19 +43,33 @@ or the GammaMarkets protocol itself.
 | Nostr NIPs | commit `a2494f4f81d46684e5814a9bf35e2b1df978f955` (2026-09-09); files 09, 15, 17, 32, 37, 42, 44, 59, 65, 89, 99 |
 | NIP-15 status | draft/unrecommended — compatibility only |
 | NIP-44 version | v2 payload only |
-| Nostr library | Python `nostr-sdk==0.44.5` (released 2026-07-25, Python ≥3.9); Phase 0 verifies FFI APIs/ACK semantics |
+| Nostr library | Phase 0 candidate: host-resolved Python `nostr-sdk==0.44.8` from the pinned LNbits `uv.lock`; approval requires the qualification below |
 | LNbits | `v1.6.2-rc1`, commit `e336fe1`, Python ≥3.10,<3.13 |
 
-Phase 0 MUST copy these immutable pins into `PINS.md`, verify that the Python SDK's
-NIP-44/NIP-59 and per-relay output APIs satisfy this contract, and change a pin only
-through an explicit spec decision. Pins are surfaced in the merchant settings UI. The GammaMarkets
-revision is emitted only on public commerce events as defined in §6.8; it MUST
-NOT be added to encrypted-message wrapper tags.
+Phase 0 MUST copy the immutable protocol and host pins into `PINS.md`. Before
+implementation, `PINS.md` MUST also record the approved Python SDK wheel filename and
+SHA-256 for every supported platform, release-source revision, native Cargo dependency
+revisions, supported installation/lockfile path, and executable security, FFI, and
+per-relay ACK results. Version `0.44.8` is a candidate because the pinned host resolves
+it, not a safety certification by version number. Version `0.44.5` MUST NOT be selected
+unless an explicit spec decision demonstrates that the tested artifact contains or
+otherwise mitigates fixes `02a88bd5688de058bfba8aa9fb4612441a384eff`,
+`06f9b3f5dd7f6399249ff608189edfd98617c3a3`,
+`b7f8894055b1223258109076cf34110e53695cef`, and
+`fe4c30de618ba7c604777ab4b6863f4ab413a760`. The host MUST NOT be silently
+downgraded. Any candidate other than the host-resolved `0.44.8` requires an explicit
+spec decision and the same qualification. Source ancestry is evidence, not wheel or
+runtime certification; independent pre-SDK bounds and signature validation remain
+mandatory.
+
+Pins are surfaced in the merchant settings UI. The GammaMarkets revision is emitted
+only on public commerce events as defined in §6.8; it MUST NOT be added to encrypted-
+message wrapper tags.
 
 ### 2.1 LNbits core integration architecture
 
 The following diagram defines the host boundary and the runtime flow between LNbits core
-and the `gammamarket` extension. It shows only the core integration points on which this
+and the `gammamarkets` extension. It shows only the core integration points on which this
 specification relies; the internal LNbits implementation remains outside this contract.
 
 ```mermaid
@@ -77,7 +91,7 @@ flowchart LR
         Notify[Notification service and host SMTP]
     end
 
-    subgraph Gamma[gammamarket extension - commerce authority]
+    subgraph Gamma[gammamarkets extension - commerce authority]
         Boundary[Extension routes and lifecycle hooks]
         Services[Checkout, catalog, order, and settlement services]
         PaymentAdapter[LNbits payment adapter]
@@ -99,7 +113,7 @@ flowchart LR
     Funding <-->|5. Invoice and settlement| Lightning
     Funding -->|Settlement detected by core| CorePayments
     CorePayments -->|Settled Payment notification| Tasks
-    Tasks -->|6. Registered gammamarket callback| Services
+    Tasks -->|6. Registered gammamarkets callback| Services
     Services -->|Consume reservation; confirm order; enqueue messages| GammaDB
     Workers -->|7. Query status or exact external_id after gaps or restart| InvoiceService
     Workers -->|8. Send queued order emails via host SMTP| Notify
@@ -114,7 +128,7 @@ flowchart LR
 Flow and ownership rules:
 
 1. LNbits discovers the Python extension, mounts its `APIRouter`, runs its database
-   migrations, and invokes `gammamarket_start()`/`gammamarket_stop()` for managed
+   migrations, and invokes `gammamarkets_start()`/`gammamarkets_stop()` for managed
    background work.
 2. HTTP traffic enters through the LNbits FastAPI host. Merchant routes use LNbits
    authentication and wallet ownership checks; public checkout remains capability- and
@@ -123,7 +137,7 @@ Flow and ownership rules:
    payment-projection state in its namespaced database. It MUST NOT write LNbits core
    payment tables directly.
 4. Invoice creation crosses the boundary only through the LNbits payment service with
-   `extension="gammamarket"` and `external_id="gammamarket:<order.id>"`. LNbits core
+   `extension="gammamarkets"` and `external_id="gammamarkets:<order.id>"`. LNbits core
    persists the authoritative incoming payment and delegates Lightning operations to the
    configured funding source.
 5. Core dispatches settled `Payment` objects through `TaskManager`; the extension's named
@@ -133,8 +147,9 @@ Flow and ownership rules:
    or uncertain invoice creation (§8.2 and §8.7). Nostr transport is extension-owned and
    reaches relays directly; relays never become authoritative for inventory or settlement.
 7. Order email notifications are queued in `email_queue` and delivered by a leased worker
-   through the host's configured SMTP transport (§8.8); the extension stores no SMTP
-   credentials and holds no spend-capable scope.
+   through the host's configured SMTP transport (§8.8). The extension stores no SMTP or
+   spend credentials and its code policy forbids outgoing-payment APIs; native host
+   process privilege is nevertheless not a spend-capability sandbox (§8.3).
 
 ---
 
@@ -182,16 +197,23 @@ app info:    31990:<merchant_pubkey>:<handler_d>
   currency_decimals: INTEGER)`. ISO 4217 decimals; `decimals=0` for sat-denominated
   items, 2 for USD/EUR, etc.
 - All computed order totals are stored in **satoshis** (`*_sat` columns, INTEGER ≥ 0).
-- Fiat→sat conversion uses LNbits' exchange-rate utility immediately before reservation.
-  One `order_fx_quotes` row per source currency persists `currency`, decimal-string
-  rate, rate direction/unit, source, and timestamp. A singular order-level rate is
-  insufficient for mixed-currency carts.
-- Use Python `Decimal` constructed from strings; binary float is forbidden in domain
-  calculations. Quotes older than 5 minutes are not used; if a fresh rate is unavailable,
-  checkout fails without reserving stock.
-- Rounding rule: extended quantity×unit-price is converted per line and rounded **up**
-  to one sat; shipping components are converted and rounded up separately. Total is the
-  checked sum. LNbits receives an integer sat amount.
+- The host adapter calls uncached `btc_rates(currency)`. After a successful provider
+  call it returns `FxQuote(currency, currency_per_btc, sat_per_major_unit, providers,`
+  `observed_at, expires_at)`, where numeric values are `Decimal`, providers is nonempty,
+  `sat_per_major_unit = Decimal(100_000_000) / currency_per_btc`, `observed_at` is the
+  UTC completion time, and `expires_at = observed_at + 5 minutes`.
+- Host floats are converted only at the adapter boundary with `Decimal(str(value))` and
+  `currency_per_btc` is the Decimal arithmetic mean of the filtered provider values
+  returned by `btc_rates`. Domain code MUST NOT call
+  `fiat_amount_as_satoshis` or inherit its `int()` truncation. Empty, zero, nonfinite,
+  failed, or stale results reject checkout before reservation.
+- One `order_fx_quotes` row per source currency persists decimal-string values, provider
+  names, direction/units, observed/expiry timestamps, and source. A singular order-level
+  rate is insufficient for mixed-currency carts.
+- Conversion is `amount_minor / 10**currency_decimals * sat_per_major_unit`, using
+  `ROUND_CEILING` per line and per shipping component. Total is the checked integer sum.
+  LNbits receives an integer sat amount. Phase 0 MUST measure and approve precision/error
+  at the unavoidable host-float adapter boundary.
 
 ---
 
@@ -331,8 +353,9 @@ publishing it MUST fail validation rather than silently charging zero.
 | shipping_option_id FK | NULL for digital/pickup-na |
 | payment_hash | UNIQUE; set when invoice created |
 | invoice_expiry | |
-| public_token_hash / public_token_expires_at | web-status bearer; hash only, default expiry 30 days |
-| payment_exception | BOOLEAN — late/mismatched payment flag |
+| public_token_hash / public_token_enc / public_token_expires_at | web-status bearer; hash for lookup plus protected encrypted copy for eligible delayed notification rendering; default expiry 30 days |
+| checkout_scope_hash | privacy-key HMAC of the web client's admission scope for open-order quotas; NULL for protocol orders and never a raw IP |
+| payment_exception / payment_exception_reason / payment_exception_resolution | exception flag, bounded code, and `unresolved|accepted|refund_requested|refund_confirmed` resolution |
 | oversold | BOOLEAN — set when an exception-resolution `accept` exceeds stock |
 | receipt_verified | BOOLEAN — buyer kind-17 receipt's bolt11+preimage checked against the settled payment (cosmetic only) |
 | email_opt_in | BOOLEAN NOT NULL DEFAULT false | customer consented to transactional order emails (§8.8) |
@@ -361,46 +384,61 @@ is encrypted at rest and retained per §11.3.
 
 ### 4.8 `payments`
 
-`id` PK, `order_id` FK UNIQUE, `payment_hash` UNIQUE, `checking_id_enc`, `bolt11_enc`,
-`wallet_refs_enc`, `wallet_id_hash`, `source_wallet_id_hash`, `amount_sat`, `status` (`pending|settled|expired|failed|creation_unknown`),
-`settled_at`, `created_at`. Payments are a local projection of LNbits core payments,
-not a second settlement authority. `core_external_id = "gammamarket:<order.id>"`
-MUST be passed to LNbits and is the recovery key for the invoice saga (§8.2).
+`id` PK, `order_id` FK UNIQUE, `core_external_id` TEXT UNIQUE, `payment_hash`
+UNIQUE NULL, `checking_id_enc`, `bolt11_enc`, `wallet_refs_enc`, `wallet_id_hash`,
+`source_wallet_id_hash`, `amount_sat`, `status`
+(`creating|creation_unknown|pending|settled|expired|failed`), `settled_at`, `created_at`.
+The extension inserts the projection with `status=creating` before invoking LNbits.
+Payments are a local projection of LNbits core payments, not a second settlement
+authority. `core_external_id = "gammamarkets:<order.id>"` MUST be passed to LNbits and
+is the recovery key for the invoice saga independently of the commerce order state
+(§8.2).
 
 ### 4.9 `inbox_events`
 
 `id` PK, `outer_event_id` UNIQUE, `rumor_id` UNIQUE-where-present, `merchant_id` FK,
-`received_at`, `kind`, `author_hash`, `author_enc`, `processed_state`
-(`received|validated|rejected|processed|quarantined`), `reject_reason`,
-`raw_json` (bounded — see §15), `processed_at`.
+`source_relay_url`, `received_at`, `kind`, `author_hash`, `author_enc`,
+`processed_state` (`received|validated|rejected|processed|quarantined`),
+`reject_reason`, `raw_json` (bounded — see §15), `processed_at`. `source_relay_url` is
+normalized provenance used for NIP-15 replies; it is never trusted as a NIP-17 fallback.
 
 The inbox is a durable queue: events are persisted **before** processing so restarts
 cannot lose them.
 
 ### 4.10 `outbox_events`
 
-`id` PK, `merchant_id` FK, `aggregate_type` (`product|collection|shipping|merchant|order_msg`),
-`aggregate_id`, `aggregate_revision`, `event_kind`, `event_address` NULL,
-`payload_json` (non-sensitive public intent) and `payload_enc` (private order-message
- descriptor), never a long-lived signed event, `state`
+`id` PK, `merchant_id` FK, `aggregate_type`
+(`product|collection|shipping|merchant|order_msg`), `aggregate_id`,
+`aggregate_revision`, `event_kind`, `event_address` NULL, `payload_json`
+(non-sensitive public intent) and `payload_enc` (private order-message descriptor),
+never a long-lived signed event, `state`
 (`pending|claimed|publishing|partially_published|published|superseded|failed`),
-`attempts`, `next_attempt_at`, `claimed_by`/`claimed_at` (worker lease),
-`last_error` (bounded diagnostic code—never event content), `created_at`, `updated_at`.
+`attempts`, `next_attempt_at`, `claimed_by`, `claimed_at`, `claimed_until`, and
+monotonically increasing `claim_token`, `last_error` (bounded diagnostic code—never
+event content), `created_at`, `updated_at`. Every leased write compares the active
+`claim_token`; an expired worker cannot commit after another claim.
 `outbox_dependencies` (`outbox_event_id`, `depends_on_outbox_event_id`, UNIQUE pair)
 expresses publication ordering.
 
 `relay_publications`: `id` PK, `outbox_event_id` FK, `delivery_copy`
-(`public|recipient|sender`), `relay_url`, `event_id`, `result`
+(`public|recipient|sender`), `relay_url`, `event_id`, `attempt_no`, `result`
 (`accepted|rejected|timeout`), `message` (relay OK message, truncated to 512 chars),
-`attempted_at`. NIP-17 recipient and sender copies have different event ids.
+`attempted_at`; UNIQUE(outbox_event_id, delivery_copy, relay_url, event_id,
+attempt_no). NIP-17 recipient and sender copies have different event ids. Positive
+`accepted` evidence is durable and successful copy/relay targets are never resent.
 
-### 4.11 `relay_configs`
+### 4.11 `relay_configs`, `peer_relays`, and `relay_cursors`
 
-`id` PK, `merchant_id` FK (NULL = server-wide default), `relay_url`, `direction`
-(`public|inbox|both`), `enabled`, timestamps. The kind-10050 discovered inbox relays of
-*buyers* are cached in `peer_relays` (`pubkey_hash`, `pubkey_enc`, `relay_url`,
+`relay_configs`: `id` PK, `merchant_id` FK (NULL = server-wide default), `relay_url`,
+`direction` (`public|inbox|both`), `enabled`, timestamps. The kind-10050 discovered inbox
+relays of *buyers* are cached in `peer_relays` (`pubkey_hash`, `pubkey_enc`, `relay_url`,
 `fetched_at`, `expires_at`). Buyer keys/order ids are encrypted at rest; keyed HMAC
 indexes permit lookup without deterministic encryption.
+
+`relay_cursors`: `id` PK, `merchant_id` FK, normalized `relay_url`, `protocol`
+(`nip17|nip15`), `last_completed_session_start`, `eose_session_id`, `eose_at`, and
+`updated_at`; UNIQUE(merchant_id, relay_url, protocol). A cursor advances only after
+EOSE and every event delivered before EOSE is durably admitted.
 
 ### 4.12 `inventory_reservations`
 
@@ -455,12 +493,15 @@ apply across workers. Raw IP addresses are never stored.
 `id` PK, `merchant_id` FK, `order_id` FK NULL, `channel` (`merchant|customer`),
 `event_type` (`order_received|confirmed|processing|shipped|delivered|cancelled|
 expired|on_hold|refund_requested`), `recipient_enc` BLOB, `recipient_hash` TEXT,
-`state` (`pending|claimed|sent|failed`), `attempts`, `next_attempt_at`,
-`claimed_by`/`claimed_at`, `last_error` (bounded code only), `created_at`, `sent_at`.
-UNIQUE(order_id, channel, event_type) dedupes repeated transitions. The body is
-rendered at send time from a fixed template and current order state — no rendered
-message or decrypted address is retained. Sent rows keep metadata only and are pruned
-with §11.3 retention.
+`state` (`pending|claimed|sent|suppressed|failed`), `attempts`, `next_attempt_at`,
+`claimed_by`, `claimed_at`, `claimed_until`, monotonically increasing `claim_token`,
+`last_error` (bounded code only), `created_at`, `sent_at`.
+UNIQUE(order_id, channel, event_type, recipient_hash) dedupes intent per recipient;
+each merchant recipient has its own row. Every leased write compares `claim_token`.
+The body is rendered at send time from a fixed template and current order state—no
+rendered message or decrypted address is retained. Queue uniqueness does not guarantee
+exactly-once SMTP delivery: a crash after SMTP acceptance but before commit may deliver
+a duplicate. Sent rows keep metadata only and are pruned with §11.3 retention.
 
 ### 4.19 Indexes (minimum)
 
@@ -481,15 +522,18 @@ email_queue(state, next_attempt_at)         email_queue(order_id)
 
 ## 5. HTTP API surface
 
-Base path: `/gammamarket/api/v1`. Admin routes require
+Base path: `/gammamarkets/api/v1`. Admin routes require
 `Depends(check_user_exists)` and every repository query also scopes by the resolved
 LNbits `user.id`/merchant id (defense in depth). Because `check_user_exists` accepts
 header, cookie, and optionally user-id-only authentication, a second dependency on every
-admin mutation MUST reject user-id-only auth and require either (a) Authorization bearer,
-or (b) cookie auth plus exact `Origin == GAMMAMARKET_PUBLIC_BASE_URL` and a per-session
-double-submit CSRF token. Missing/`null` origins fail cookie mutations. CORS is disabled
-unless an operator configures an explicit origin allowlist. Public routes are
-unauthenticated and database-rate-limited (§15).
+admin mutation MUST reject user-id-only auth and require either (a) an Authorization
+bearer, or (b) cookie auth plus exact `Origin == GAMMAMARKETS_PUBLIC_BASE_URL` and a
+per-session double-submit CSRF token. Missing/`null` origins fail cookie mutations.
+The extension MUST NOT rely on host CORS, which may be permissive; origin/CSRF checks
+are enforced at the route boundary. Production qualification MUST verify that host audit
+middleware disables or redacts pre-route body/header capture for nsec import, checkout
+PII, decrypted-order routes, and `X-Order-Token`. Public routes are unauthenticated and
+database-rate-limited (§15).
 
 ### 5.1 Admin — merchant
 
@@ -527,7 +571,8 @@ GET   /orders/{id}                     full detail incl. decrypted address for o
 POST  /orders/{id}/status              body: {to_state} — must be a legal transition §7.1
 POST  /orders/{id}/shipping            body: {shipping_state, tracking?, carrier?, eta?}
 POST  /orders/{id}/cancel              merchant-initiated cancel with reason
-POST  /orders/{id}/resolve-exception   body: {action: "accept"|"refund"} — see §8.3
+POST  /orders/{id}/resolve-exception   body: {action: "accept"|"refund"|"confirm-refund", refund_reference?} — see §8.3
+POST  /orders/{id}/public-token/reissue authenticated web-order token rotation; old token revoked immediately
 GET   /orders/{id}/events              audit log
 ```
 
@@ -541,13 +586,19 @@ GET   /public/shipping/{merchant_pubkey}/{d_tag}
 POST  /public/checkout
 GET   /public/order-status                          token via X-Order-Token header
 POST  /public/order-email-opt-out                   token via X-Order-Token; sets email_opt_in=false
-GET   /p/{merchant_pubkey}/{d_tag}                  buyer-facing HTML product page (ui_route)
+GET   /p/{naddr}                                    NIP-89 handler for kind-30402 naddr
+GET   /p/{merchant_pubkey}/{d_tag}                  canonical buyer-facing HTML product page
 GET   /order                                        buyer order page; token is URL fragment only
 ```
 
+The `naddr` handler decodes bech32, requires kind `30402`, a local merchant pubkey, and
+a valid `d` identifier, and ignores embedded relay hints for server-side fetching. It
+renders or redirects only to the local canonical product page; malformed, wrong-kind,
+and foreign-merchant references fail without relay retrieval.
+
 Buyer browsers poll `GET /public/order-status` with `X-Order-Token` every 5s until
 a terminal/confirmed state. Bearer tokens MUST NOT appear in a request path or query.
-The shareable magic link is `/gammamarket/order#<token>`: URL fragments are not sent
+The shareable magic link is `/gammamarkets/order#<token>`: URL fragments are not sent
 to the server; page JavaScript reads and immediately removes the fragment with
 `history.replaceState`, keeps the token in memory only, and sends it in the header.
 The server sets `Referrer-Policy: no-referrer`; request/header logging MUST redact
@@ -597,7 +648,7 @@ POST  /import/{job_id}/cutover        final step; performs single-writer switch 
 ### 5.6 Error model
 
 All errors return RFC 9457 problem details:
-`{"type": "urn:gammamarket:<code>", "title": …, "status": …, "detail": …}`.
+`{"type": "urn:gammamarkets:<code>", "title": …, "status": …, "detail": …}`.
 Defined codes include: `insufficient-stock`, `invalid-transition`,
 `duplicate-order`, `wallet-mismatch`, `product-inactive`, `rate-limited`,
 `invalid-shipping-destination`, `order-expired`, `unauthorized`.
@@ -675,9 +726,10 @@ refs. Content = description markdown.
 ### 6.3 Shipping option — kind 30406
 
 Required tags: `d`, `title`, `price` `[base_cost, currency]`, `country` (ISO 3166-1
-alpha-2 list), `service`. Optional per spec: `region`, `duration` `[min,max,H|D|W]`,
-`carrier`, `location`, `g`, `weight-min/max`, `dim-min/max`, `price-weight`,
-`price-volume`, `price-distance`.
+alpha-2 list), `service`. Supported optional tags: `region`, `duration`
+`[min,max,H|D|W]`, `carrier`, `location`, `g`, `weight-min/max`, `dim-min/max`,
+`price-weight`, and `price-volume`. `price-distance` MUST be rejected in v1 because
+checkout does not geocode buyer destinations.
 
 Validation before publish: `service=pickup` requires `location` or `g`; constraint
 min ≤ max; countries non-empty.
@@ -697,7 +749,7 @@ NIP-17 reachability. Release-A web checkout activation does not require kind 100
 
 - `31990` (handler information): `d` = `merchant.recommended_app_d`; content is
   kind-0-style JSON describing the extension checkout; include `["k", "30402"]`
-  and `["web", "<origin>/gammamarket/p/<bech32>", "naddr"]`. The literal
+  and `["web", "<origin>/gammamarkets/p/<bech32>", "naddr"]`. The literal
   `<bech32>` placeholder is replaced by clients per NIP-89.
 - `31989` (recommendation): `d` = **`"30402"`** (the supported event kind, not the
   app id); `a` tag = `["a", "31990:<merchant_pubkey>:<recommended_app_d>",
@@ -717,9 +769,12 @@ are intentionally different. Golden fixtures MUST catch this distinction.
 ```
 
 **Product 30018** — event `d` and content `id` both equal
-`product.nip15_product_id`; content JSON per NIP-15: `{id: <nip15_product_id>, stall_id: <stall_d>,
-name, description, images[], currency, price, quantity: available, specs{},
-shipping: [{id, cost}] }`. Lossy rules (must be surfaced in UI preview):
+`product.nip15_product_id`; literal content JSON follows NIP-15:
+`{"id":"<nip15_product_id>","stall_id":"<stall_d>","name":"…",`
+`"description":"…","images":[],"currency":"USD","price":1.00,`
+`"quantity":1,"specs":[["size","M"]],"shipping":[{"id":"<zone>","cost":0}]}`.
+`specs` is an array of `[name,value]` pairs; `quantity` is an integer or `null` for
+unlimited stock. Lossy rules (must be surfaced in UI preview):
 
 - product in multiple collections → belongs to exactly one stall (its catalog's);
 - variations → independent 30018; preferred id `<parent_d>-<variation_d>`. If that
@@ -785,8 +840,12 @@ only to the buyer's kind-10050 relays; the sender copy goes only to the merchant
 kind-10050 relays. Both copy results are tracked separately. This satisfies NIP-17
 recovery semantics; local database storage is not a protocol substitute.
 
-**kind 16, type 1 — order creation (buyer→merchant)** — required tags `p`
-(merchant), `subject`, `type=1`, `order`, `amount` (sats), `item` ×n
+Every kind-16 rumor requires exactly one `p` recipient, one `subject`, one `type`, and
+one `order` tag. Type-specific requirements below are additional; duplicate common tags
+are rejected. Public NIP-32 labels MUST NOT be added to rumors, seals, or gift wraps.
+
+**kind 16, type 1 — order creation (buyer→merchant)** — common tags plus `amount`
+(sats) and `item` ×n
 (`["item","30402:<pk>:<d>","<qty>"]`); optional `shipping`, `address`,
 `email`, `phone`. This implementation additionally requires `country` and permits
 `region` for physical orders (§8.1); web clients may encode the same fields in an
@@ -822,11 +881,18 @@ hash; otherwise leave unthreaded and reveal no order existence.
 
 ### 6.10 NIP-15 message compatibility (NIP-04 DMs)
 
-| NIP-15 type | direction | content JSON |
+| NIP-15 type | direction | literal content JSON shape |
 |---|---|---|
-| 0 order | buyer→merchant | `{id, name, address, message, contact:{nostr?,email?,phone?}, items:[{product_id, quantity}]}` |
-| 1 payment req | merchant→buyer | `{id, message, payment_options:[{type:"ln", link:"<raw bolt11>"}]}` |
-| 2 status | merchant→buyer | `{id, message, paid: bool, shipped: bool}` |
+| 0 order | buyer→merchant | `{"id":"<order>","type":0,"name":"…","address":"…","message":"…","contact":{"nostr":"…","email":"…","phone":"…"},"items":[{"product_id":"…","quantity":1}],"shipping_id":"<zone>"}` |
+| 1 payment req | merchant→buyer | `{"id":"<order>","type":1,"message":"…","payment_options":[{"type":"ln","link":"<raw bolt11>"}]}` |
+| 2 status | merchant→buyer | `{"id":"<order>","type":2,"message":"…","paid":true,"shipped":false}` |
+
+The deterministic digital zone supports all-digital orders. Standard NIP-15 supplies an
+opaque physical address, which cannot satisfy the machine-readable country/region
+contract. Automatic physical checkout is accepted only when a separately specified and
+validated machine-readable country/region extension is present. Ordinary opaque-address
+physical orders are rejected before reservation with a type-2 status explanation;
+Release C MUST NOT claim general NIP-15 physical-order compatibility.
 
 NIP-04 (kind 4) is deprecated-insecure: accepted for compatibility, but the merchant
 UI MUST label it "legacy / metadata-exposed". Apply the same pre-persistence size/rate
@@ -841,12 +907,12 @@ there is no private routing claim.
 ### 7.1 Order state
 
 ```text
-received → rejected | invoice_pending
-invoice_pending → awaiting_payment | rejected
+received → rejected | invoice_pending | cancelled
+invoice_pending → awaiting_payment | rejected | cancelled
 awaiting_payment → confirmed | expired | cancelled
 confirmed → processing | cancelled          (cancel after confirm = exceptional, needs reason)
 processing → completed | cancelled
-expired | cancelled → confirmed              (merchant-only late-payment accept; §8.3)
+expired | cancelled → confirmed              (merchant-only verified late-settlement accept; §8.3)
 completed, rejected → terminal
 ```
 
@@ -879,8 +945,10 @@ is `confirmed|processing|completed` (or merchant-cancelled after settlement);
 
 ### 7.2 Shipping state
 
-`not_required → pending → processing → shipped → delivered`; `exception` reachable
-from `processing|shipped`. Digital orders start and stay `not_required`.
+`not_required → pending → processing → shipped → delivered`; `exception` is reachable
+from `processing|shipped`. Digital orders start and stay `not_required`. Recovery from
+`exception` to `processing|shipped` requires an authenticated merchant action and a
+bounded reason recorded in `order_events`.
 
 ### 7.3 Reservation state
 
@@ -890,10 +958,15 @@ transaction.
 
 ### 7.4 Outbox state
 
-`pending → claimed → publishing → published | partially_published | failed`;
-`pending|claimed|publishing` → `superseded` when a newer `aggregate_revision` exists
-for the same `(aggregate_type, aggregate_id, event_kind)`. Order-message outbox rows
-(`aggregate_type=order_msg`) MUST NOT be superseded.
+`pending|partially_published → claimed → publishing → published|pending|`
+`partially_published|failed`. Zero positive ACKs return the row to `pending` with
+backoff; an incomplete nonzero result returns it to `partially_published`; only exhausted
+attempts or an explicit permanent policy enter `failed`. Public rows in
+`pending|claimed|publishing|partially_published|failed` may become `superseded` when a
+newer `aggregate_revision` exists for the same `(aggregate_type, aggregate_id,
+event_kind)`. Order-message rows (`aggregate_type=order_msg`) MUST NOT be superseded.
+A stale claim is reconstructed from durable positive `relay_publications` and returned
+to `pending` or `partially_published` by a fencing-token compare-and-swap.
 
 ### 7.5 Inbox state
 
@@ -968,37 +1041,45 @@ saga:
    Lock products in sorted id order (avoids PostgreSQL deadlocks), enforce open-order
    caps, and transition the order with compare-and-swap `WHERE state='received'`.
    If any update/CAS rowcount != 1, roll back the entire transaction. Otherwise insert
-   `held` reservations with a provisional deadline and enter `invoice_pending`. Exactly
-   one concurrent worker can win this transition.
+   `held` reservations, insert the local payment projection with deterministic
+   `core_external_id` and `status=creating`, and enter `invoice_pending`. Exactly one
+   concurrent worker can win this transition.
 2. Call LNbits `create_invoice` with the already revalidated merchant wallet,
    `amount=order.total_sat`, `currency="sat"`, `expiry=RESERVATION_TTL`,
-   `extension="gammamarket"`, `external_id="gammamarket:<order.id>"`, and
-   `extra={"tag":"gammamarket","order_id":order.id}`. Memo MUST be generic
-   (`"GammaMarket order"`) and contain no buyer key, address, email, or external id.
-3. In a second extension-DB transaction, verify the order is still `invoice_pending`,
-   persist returned payment hash/checking id/BOLT11/actual expiry and wallet/source-
-   wallet snapshots, align all reservation expiries to decoded invoice expiry, transition to
-   `awaiting_payment`, and enqueue the payment-request outbox row. A web response is
-   sent only after this transaction commits.
-4. If LNbits definitively rejects creation, release reservations and transition to
-   `rejected`. If the call times out or its outcome is unknown, keep
-   `invoice_pending`, set `payment_exception=true`, and reconcile by exact
-   `external_id`; **do not automatically create a second invoice**.
-5. On process restart, reconciliation queries LNbits core payments by exact
-   `external_id`. Exactly one match is attached using step 3. Zero matches after a
-   5-minute uncertainty window releases reservations and rejects the order; more than
-   one match is a critical manual exception and none is delivered automatically.
+   `extension="gammamarkets"`, `external_id="gammamarkets:<order.id>"`, and
+   `extra={"tag":"gammamarkets","order_id":order.id}`. Memo MUST be generic
+   (`"GammaMarkets order"`) and contain no buyer key, address, email, or external id.
+3. In a second extension-DB transaction, attach a unique returned payment to the local
+   projection regardless of whether the commerce state is now `invoice_pending` or
+   `cancelled`; persist hash/checking id/BOLT11/actual expiry and wallet/source-wallet
+   snapshots. If still `invoice_pending`, align reservation expiries, transition to
+   `awaiting_payment`, and enqueue the payment request. If cancellation won, keep
+   `cancelled`, do not deliver/return BOLT11 or enqueue a payment request, and retain the
+   projection for late-settlement detection.
+4. Cancellation from `received|invoice_pending|awaiting_payment` atomically releases
+   held reservations exactly once. If LNbits definitively rejects creation, set the
+   projection `failed`; release/reject only when the order remains `invoice_pending`,
+   while a cancelled order stays cancelled. If the call times out or is unknown, set
+   `status=creation_unknown` and `payment_exception=true`; **never automatically create
+   a second invoice**.
+5. Reconciliation selects local payment projections in `creating|creation_unknown` and
+   queries LNbits by exact `core_external_id`, independent of `orders.state`. Exactly one
+   match is attached using step 3. Zero matches after a five-minute uncertainty window
+   marks the projection failed and releases/rejects only an `invoice_pending` order;
+   `cancelled` remains cancelled. More than one match is a critical manual exception and
+   none is delivered automatically.
 
-The actual decoded BOLT11 expiry is authoritative; the reservation expiry MUST be
-updated to it. This closes the crash window after LNbits persisted an invoice but
-before the extension persisted its local projection.
+The actual decoded BOLT11 expiry is authoritative for still-held reservations. This
+closes the crash/cancellation window after LNbits persists an invoice but before the
+extension persists its local projection. A settlement after cancellation follows the
+payment-exception path and MUST NOT auto-reopen the order.
 
 ### 8.3 Settlement (LNbits invoice-paid event)
 
-Trigger: `task_manager.register_invoice_listener(callback, name="gammamarket")`
+Trigger: `task_manager.register_invoice_listener(callback, name="gammamarkets")`
 on every application worker. The callback first requires
-`payment.extension == "gammamarket"` and an exact
-`payment.external_id == "gammamarket:<UUID>"`; it then verifies wallet, order, amount,
+`payment.extension == "gammamarkets"` and an exact
+`payment.external_id == "gammamarkets:<UUID>"`; it then verifies wallet, order, amount,
 and tag. It can attach a missing local payment projection (crash during §8.2 step 3)
 before settlement. A payment matched only by buyer-controlled metadata is rejected.
 
@@ -1022,18 +1103,23 @@ If the order is `expired` or pre-payment `cancelled`: mark payment settled, set
 `payment_exception=true`, DO NOT change state or consume reservations — merchant
 resolves via `/resolve-exception`:
 
-- `accept` → in one locked transaction, decrement only currently available finite
-  stock (`stock_on_hand - stock_reserved`) without touching other buyers' reservations;
-  unlimited stock needs no decrement. Record any shortfall in
-  `order_items.backordered_qty`, set `orders.oversold=true`, then transition to
-  `confirmed`. `stock_on_hand` never goes negative. For physical oversold orders,
-  `shipping_state` becomes `processing`; digital orders remain `not_required`. The type-3
-  status message content MUST disclose the backorder. **Funds are accepted with
-  disclosed oversell — the merchant owes fulfillment or a manual refund.**
-- `refund` → order stays terminal; `order_events` records `refund_requested`.
-  v1 performs **no** automated outgoing payments — the merchant refunds
-  out-of-band from the LNbits wallet UI. This keeps the extension free of any
-  spend-capable credential scope.
+- `accept` → only after verified settlement, in one locked transaction decrement
+  currently available finite stock (`stock_on_hand - stock_reserved`) without touching
+  other buyers' reservations; unlimited stock needs no decrement. Record any shortfall
+  in `order_items.backordered_qty`, set `orders.oversold=true`, transition to `confirmed`,
+  and set resolution `accepted`/clear the exception. `stock_on_hand` never goes negative.
+  For physical oversold orders, `shipping_state` becomes `processing`; digital orders
+  remain `not_required`. The type-3 status MUST disclose the backorder. **Funds are
+  accepted with disclosed oversell—the merchant owes fulfillment or a manual refund.**
+- `refund` → the order stays terminal, `order_events` records `refund_requested`, and
+  resolution becomes `refund_requested`; the exception remains open. v1 performs no
+  automated outgoing payment. A separate authenticated `confirm-refund` action records
+  a merchant-supplied non-secret reference and changes resolution to `refund_confirmed`/
+  clears the exception without claiming that LNbits verified an outgoing refund.
+
+Native Python extensions share the LNbits process and are not a spend-capability
+sandbox. Runtime code MUST NOT call outgoing-payment APIs or retain admin/spend
+credentials; this is a reviewed and tested policy, not an isolation guarantee.
 
 ### 8.4 Late payment
 
@@ -1059,7 +1145,9 @@ For each admitted `inbox_events` row:
 4. Verify seal signature + id.
 5. NIP-44-decrypt seal content using merchant key + `seal.pubkey` → rumor.
 6. Require rumor id to equal the canonical NIP-01 hash, require it to be unsigned,
-   and require `rumor.pubkey == seal.pubkey`. The outer key is never identity.
+   and require `rumor.pubkey == seal.pubkey`. The outer key is never identity. Commit
+   `processed_state=validated` before domain dispatch; reconciliation resumes this durable
+   checkpoint without repeating admission.
 7. If seal/rumor author is the merchant, accept only a rumor id already present in the
    outbound outbox/order-messages table, mark it as the recovered sender copy, and do
    not dispatch a domain command. This prevents the merchant's required self-wrap from
@@ -1080,10 +1168,12 @@ Buyer→merchant cancel (type 3 `cancelled`): apply only via §7.1 legality, key
 
 Worker loop:
 
-1. Atomically claim up to N rows where `state=pending AND next_attempt_at<=db_now`,
-   setting worker id, lease deadline, fencing token, and `state=claimed`. PostgreSQL
-   uses `FOR UPDATE SKIP LOCKED`; single-worker SQLite uses `BEGIN IMMEDIATE` plus a
-   bounded select/update. Claim behavior has dialect integration tests (§14).
+1. Atomically claim up to N rows where `state IN ('pending','partially_published')`,
+   `next_attempt_at<=db_now`, and `attempts<MAX_ATTEMPTS`, setting worker id,
+   `claimed_until`, incremented `claim_token`, and `state=claimed`. PostgreSQL uses
+   `FOR UPDATE SKIP LOCKED`; single-worker SQLite uses `BEGIN IMMEDIATE` plus a bounded
+   select/update. Every later write compares `claim_token`; claim behavior has dialect
+   integration tests (§14).
 2. Claim only rows whose dependencies are published. If a newer revision exists for a
    supersedable aggregate, mark the old row `superseded`; dependent rows are rebound
    to the current replacement intent or rebuilt—never treated as satisfied by stale
@@ -1105,16 +1195,20 @@ Worker loop:
    competing addressable event. Record it, pause that target, and surface host/relay
    clock health. NIP-59 wrapper timestamps are independently randomized in the past.
 8. Outcome policy:
-   - public event: `published` after the configured quorum (default ≥1 ACK);
-   - NIP-17 message: `published` only after ≥1 recipient-copy ACK **and** ≥1
-     sender-copy ACK;
-   - any lesser nonzero result is `partially_published` and retries only missing
-     copy/relay targets;
-   - zero ACKs increments attempts and schedules backoff. After `MAX_ATTEMPTS`, mark
-     `failed` and surface it; never report delivery from WebSocket send success alone.
+   - public event: `published` after the configured quorum (default ≥1 positive OK);
+   - NIP-17 message: `published` only after ≥1 recipient-copy positive OK **and** ≥1
+     sender-copy positive OK;
+   - accepted copy/relay targets recorded in `relay_publications` are never resent;
+   - any result with at least one positive OK but an incomplete quorum returns to
+     `partially_published` with backoff and retries only missing targets; private retries
+     retain the canonical rumor id but use fresh
+     seals, wrappers, timestamps, and outer event ids;
+   - zero positive OKs returns to `pending` with backoff; after `MAX_ATTEMPTS`, mark
+     `failed` and surface it. WebSocket send success alone is never delivery evidence.
 
 Backoff: `min(2^attempts * 5s, 30min) + jitter(0–5s)`. `MAX_ATTEMPTS` = 20.
-Stuck claims are reclaimable only after lease expiry with fencing-token CAS.
+After lease expiry, reconstruct durable accepted targets and return a stale claim to
+`pending` or `partially_published` only with a claim-token CAS.
 
 Publication ordering is explicit: supporting 30406 → 30405 → 30402; NIP-15 stall
 30017 → product 30018. Gamma collection↔product references are inherently circular,
@@ -1127,10 +1221,13 @@ reference, then publishes the kind-5 tombstone.
 
 - For each `payments.status=pending`: query LNbits payment status; if settled → §8.3;
   if expired → expiry path.
-- For each `invoice_pending`: query LNbits core by exact
-  `external_id="gammamarket:<order.id>"` and apply §8.2 step 5.
-- Reclaim stale outbox rows only with compare-and-swap on old fencing token/lease.
-- Reprocess admitted `inbox` rows left `received`.
+- For each payment projection in `creating|creation_unknown`, query LNbits core by exact
+  `core_external_id` and apply §8.2 step 5 regardless of the commerce order state.
+- Resume committed `received` orders by idempotently beginning §8.2; never abandon an
+  order merely because a crash occurred between intake and reservation.
+- Reclaim stale outbox rows only with compare-and-swap on old claim token/lease and
+  reconstruction from durable positive relay results.
+- Reprocess admitted inbox rows left `received|validated`.
 - Expire reservations for `awaiting_payment` and unresolved `invoice_pending` only
   under §8.2/§8.4 rules.
 - If an `awaiting_payment` order has a local payment but no type-2 outbox row, enqueue
@@ -1147,7 +1244,7 @@ Email is best-effort and never blocks an order transition. Enqueue points:
 - §8.1 order insert → merchant `order_received` alert.
 - §8.3 settlement → `confirmed` to merchant, and a single combined "order placed and
   paid" email to the opted-in customer containing the order summary and the
-  `/gammamarket/order#<token>` status link. Customer sends omit `order_received` —
+  `/gammamarkets/order#<token>` status link. Customer sends omit `order_received` —
   placed and paid are one event; an oversold `accept` resolution adds `on_hold` with
   the backorder disclosure.
 - Admin status/shipping/cancel transitions → `processing`, `shipped`, `delivered`,
@@ -1157,24 +1254,26 @@ Email is best-effort and never blocks an order transition. Enqueue points:
 
 Send path:
 
-1. Claim rows like §8.6 (`FOR UPDATE SKIP LOCKED` / `BEGIN IMMEDIATE`) under a worker
-   lease with fencing.
-2. Skip — marking `sent`, not retrying — when host SMTP is not configured
+1. Claim rows like §8.6 (`FOR UPDATE SKIP LOCKED` / `BEGIN IMMEDIATE`) with
+   `claimed_until` and an incremented `claim_token`; every write compares that token.
+2. Mark `suppressed`, not `sent`, without calling SMTP when host SMTP is not configured
    (`settings.is_email_notifications_configured()` false), the merchant disabled the
    event type, or a customer row's `email_opt_in` was revoked.
 3. Render the plaintext template. Subjects carry only the merchant display name and
-   event name — never a buyer name, address, email, pubkey, or internal order id.
-   Bodies may include item summaries, `total_sat`, state, and the public status link.
-   The link carries the bearer `public_token`; this is inherent to the magic-link
+   event name—never a buyer name, address, email, pubkey, or internal order id. Bodies
+   may include item summaries, `total_sat`, state, and the public status link. The link
+   uses the protected encrypted `public_token`; this is inherent to the magic-link
    design and is disclosed in §19/§21.
 4. Deliver via `lnbits.core.services.notifications.send_email` (host
    `lnbits_email_notifications_*` transport, STARTTLS). The extension MUST NOT store
    SMTP credentials or accept a merchant-supplied relay host in v1.
-5. Success → `sent`. Transient failure → backoff `min(2^attempts * 30s, 4h) + jitter`;
-   after `EMAIL_MAX_ATTEMPTS` (default 5) → `failed`, surfaced in the merchant UI.
-   SMTP 5xx recipient rejections are terminal `failed`, not retried.
+5. The host boundary exposes only classified success (`True`) versus unclassified
+   failure (`False` or exception). Only `True` enters `sent`. Every failure returns to
+   `pending` with `min(2^attempts * 30s, 4h) + jitter`; after
+   `EMAIL_MAX_ATTEMPTS` (default 5), enter `failed` and surface it. v1 MUST NOT claim it
+   distinguishes transient transport errors from SMTP 5xx recipient rejection.
 6. Rate-limit before claim via `rate_limit_buckets` keyed on `recipient_hash` and
-   merchant id — never the raw address (§15).
+   merchant id—never the raw address (§15).
 
 Email MUST NOT carry decrypted addresses, private keys, payment secrets, or full
 BOLT11/preimage material (payments correlate by `payment_hash` only). Customer sends
@@ -1197,13 +1296,21 @@ class NostrTransport(Protocol):
     async def health(self) -> dict[str, RelayHealth]
 ```
 
-**v1 decision — direct transport only.** The `nostrclient` adapter is dropped from
-v1 scope: its HTTP API is `check_admin`-gated (a merchant-scoped token cannot use
-it) and it cannot express per-publication relay targets, so the adapter would be
-dead code in practice. The `NostrTransport` interface is retained so a future
-user-scoped `nostrclient` can be slotted in without touching application services.
-v1 implementation: `nostr-sdk` client with per-purpose connection pools (public
-pool vs per-recipient inbox pool).
+**v1 baseline—direct transport.** The implementation uses a qualified `nostr-sdk`
+client with per-purpose connection pools (public versus per-recipient inbox). The
+checked-out `nostrclient` may inform lifecycle/reconnection code and may become an
+optional public-catalog adapter only after it exposes per-publication target sets,
+positive relay OK results, merchant-scoped authorization, and the same `NostrTransport`
+contract. Its current fan-out API cannot route NIP-17 and it is not a hard dependency.
+A `nostrrelay` extension is another possible adapter candidate, but no checkout/API was
+available during contract correction, so this specification makes no capability claim.
+Every adapter MUST pass identical targeted routing and ACK tests.
+
+Deterministic local accepting, rejecting, and silent relays are authoritative Phase 0
+tests. `wss://nostr.net` is an operator-approved optional external public-relay smoke
+target using an ephemeral test key and non-sensitive synthetic event. It is not a
+production default, not an assumed NIP-17 inbox, and its availability or result cannot
+replace deterministic tests.
 
 ### 9.2 Subscriptions
 
@@ -1273,12 +1380,17 @@ bounded. Never log relay AUTH challenges or complete sensitive event payloads.
 
 ## 10. Background tasks
 
-`gammamarket_start()` registers loops through
-`task_manager.create_permanent_task(func, name="gammamarket.<task>")` and stores the
-returned Task handles. `gammamarket_stop()` calls `task_manager.cancel_task(handle)`
-for only those handles (including the registered invoice listener) and closes SDK
-clients/subscriptions; calling `task_manager.cancel_all_tasks()` is forbidden.
-LNbits requires a matching stop function whenever an extension starts background work.
+`gammamarkets_start()` performs only synchronous, bounded registration through
+`task_manager.create_permanent_task(func, name="gammamarkets.<task>")` and stores the
+returned Task handles; it performs no network or reconciliation work inline. Checkout
+and relay subscriptions stay disabled behind a readiness gate until a startup
+reconciliation task completes. `gammamarkets_stop()` calls
+`task_manager.cancel_task(handle)` for only those handles (including the registered
+invoice listener) and closes SDK clients/subscriptions; calling
+`task_manager.cancel_all_tasks()` is forbidden. Every task and SDK client MUST use
+cancellation-safe `finally` cleanup because process shutdown may cancel tasks without
+invoking the extension stop hook. The stop hook handles dynamic disable but is not
+assumed on every process exit.
 
 | task | cadence | lease | purpose |
 |---|---|---|---|
@@ -1327,11 +1439,11 @@ cryptographic methods validate input lengths before allocation/decode.
   `key_version + random 96-bit nonce + ciphertext_with_tag` using LNbits' existing
   `pycryptodomex` dependency (or another approved audited AEAD already in the host).
 - Operator provides a versioned keyring through a secret source:
-  `GAMMAMARKET_MASTER_KEYS={"v1":"<32-byte base64>","v2":"…"}` and
-  `GAMMAMARKET_ACTIVE_KEY_VERSION=v2`. Configuration is parsed strictly; missing,
+  `GAMMAMARKETS_MASTER_KEYS={"v1":"<32-byte base64>","v2":"…"}` and
+  `GAMMAMARKETS_ACTIVE_KEY_VERSION=v2`. Configuration is parsed strictly; missing,
   duplicate, short, or malformed keys fail startup before merchant services activate.
 - AAD is unambiguous length-prefixed encoding of
-  `"gammamarket"`, merchant/record id, table, column, and key version — preventing
+  `"gammamarkets"`, merchant/record id, table, column, and key version — preventing
   cross-record ciphertext transplant and concatenation ambiguity.
 - Rotation is resumable: new writes use active version; a maintenance job rewraps rows
   in bounded transactions while old+new keys are present; old key removal is blocked
@@ -1347,12 +1459,12 @@ cryptographic methods validate input lengths before allocation/decode.
 
 `orders.address_enc`, `orders.contact_enc`, `order_messages.content_enc`,
 `outbox_events.payload_enc`, `order_fulfillment.tracking_enc`,
-`email_queue.recipient_enc`, encrypted idempotency
+`orders.public_token_enc`, `email_queue.recipient_enc`, encrypted idempotency
 responses, participant/external/wallet identifiers, BOLT11/checking ids, and any retained
 decrypted rumor use the same AES-256-GCM envelope with per-record/field AAD. The inbox
 stores outer ciphertext only by default; plaintext exists only during bounded processing.
 
-Equality indexes use HMAC-SHA256 under `GAMMAMARKET_PRIVACY_KEY` over
+Equality indexes use HMAC-SHA256 under `GAMMAMARKETS_PRIVACY_KEY` over
 length-prefixed purpose + merchant id + normalized value (`buyer-pubkey`, `order-id`,
 `wallet-id`, `source-wallet-id`, `client-ip`, `email-recipient` are distinct purposes). The key is backed up like the master key. Rotation
 requires dual-index columns/read support, a complete reindex from encrypted values, and
@@ -1366,11 +1478,14 @@ and retention cannot guarantee immediate removal from old backups.
 
 ### 11.4 Public tokens
 
-`public_token` = 256 random bits encoded base64url; store SHA-256(token bytes), compare
-with `hmac.compare_digest`, and reject malformed/noncanonical encodings before lookup.
-Token rotation immediately revokes the old token. Tokens are returned once at checkout
-(and replayed only from encrypted idempotency storage), expire after 30 days by default,
-and may be reissued only through authenticated merchant action.
+`public_token` = 256 random bits encoded base64url. Store SHA-256(token bytes) for
+lookup and compare with `hmac.compare_digest`; reject malformed/noncanonical encodings
+before lookup. Store a separate AEAD-encrypted copy only while the token is valid and an
+opted-in delayed notification may need to render the magic link. It is never plaintext at
+rest or logged. Rotation/revocation immediately invalidates the old hash and erases the
+encrypted copy; expiry does the same. Tokens are returned once at checkout, may be
+replayed from protected idempotency storage, and may be reissued only by authenticated
+merchant action. Default expiry remains 30 days.
 
 ---
 
@@ -1378,16 +1493,16 @@ and may be reissued only through authenticated merchant action.
 
 | setting | default | notes |
 |---|---|---|
-| `GAMMAMARKET_MASTER_KEYS` / `GAMMAMARKET_ACTIVE_KEY_VERSION` | — | required versioned keyring (§11.2) |
-| `GAMMAMARKET_PUBLIC_BASE_URL` | — | required canonical HTTPS origin; never derived from Host/Forwarded headers |
-| `GAMMAMARKET_PRIVACY_KEY` | — | required stable 32-byte secret for equality indexes/IP pseudonyms; separate from encryption keys |
+| `GAMMAMARKETS_MASTER_KEYS` / `GAMMAMARKETS_ACTIVE_KEY_VERSION` | — | required versioned keyring (§11.2) |
+| `GAMMAMARKETS_PUBLIC_BASE_URL` | — | required canonical HTTPS origin; never derived from Host/Forwarded headers |
+| `GAMMAMARKETS_PRIVACY_KEY` | — | required stable 32-byte secret for equality indexes/IP pseudonyms; separate from encryption keys |
 | `RESERVATION_TTL` | 900s | requested invoice expiry; decoded BOLT11 expiry wins |
 | `OUTBOX_MAX_ATTEMPTS` | 20 | |
 | `OUTBOX_BATCH` | 32 | rows per claim |
 | `PEER_RELAY_TTL` | 24h | kind-10050 cache |
 | `INBOX_MAX_EVENT_BYTES` | 32768 | pre-decode cap |
 | `CHECKOUT_RATE_LIMIT` | 10/min/IP | §15 |
-| `GAMMAMARKET_EMAIL_ENABLED` | true | effective only when host `is_email_notifications_configured()`; extension holds no SMTP credentials (§8.8) |
+| `GAMMAMARKETS_EMAIL_ENABLED` | true | effective only when host `is_email_notifications_configured()`; extension holds no SMTP credentials (§8.8) |
 | `EMAIL_MAX_ATTEMPTS` | 5 | per-queue-row retry bound |
 | `SPEC_REVISION` | `5dc79c5` | shown in settings UI |
 
@@ -1403,15 +1518,19 @@ and may be reissued only through authenticated merchant action.
    invalid legacy id is explicit in the manifest; unresolved conflicts block execution.
 3. **Dry run** renders all 30402/30405/30406/30017/30018 events and runs §6
    validators + golden fixture harness.
-4. **Cutover precondition:** the current `nostrmarket` code has no guaranteed
-   merchant-scoped deactivation API, so this extension cannot truthfully enforce
-   shutdown remotely. Default migration generates a new merchant key (parallel-safe).
-   Reusing the old key/addresses requires operator proof that the old merchant or whole
-   extension is disabled, recorded in the signed audit manifest; the job remains
-   `awaiting_cutover` until explicit confirmation.
-5. **Cutover:** only after the precondition, flip publish flags and enqueue aggregates.
-   The UI continues to warn that external software using the same imported key cannot
-   be detected; key reuse is an operational trust boundary, not an enforceable lock.
+4. **Inventory-authority cutover (every key strategy):** freeze new old-system order
+   intake, then inventory every old nonterminal order and still-payable invoice. The
+   existing `nostrmarket` active toggle helps freeze new structured orders but does not
+   neutralize invoices already issued. For each product, either wait/reconcile every
+   liability or reserve/partition equivalent units as `legacy_liability_qty` before
+   fixing imported available stock. The signed cutover manifest records each liability,
+   product mapping, partition, and operator confirmation; a new key alone is not safe.
+5. **Cutover:** after liabilities are accounted, flip publish flags and enqueue
+   aggregates. Old settlement handling remains active for already-issued invoices while
+   new old-system orders remain disabled. Expired/released liability stock transfers to
+   gammamarkets only through an audited inventory adjustment. Parallel operation is
+   allowed only for explicitly partitioned inventory. External software cannot be
+   detected; same-key reuse remains an additional operational trust boundary.
 
 ---
 
@@ -1459,7 +1578,7 @@ and may be reissued only through authenticated merchant action.
 | checkout POST | 10/min/IP + 100/hour/IP |
 | open (unpaid) web orders per IP | ≤ 10 concurrent |
 | open orders per buyer_pubkey per merchant | ≤ 10 concurrent |
-| held reservations per product | ≤ 100 concurrent **and** ≤ available stock |
+| held reservations per product | ≤ 100 concurrent rows; total held quantity ≤ `stock_on_hand` for finite stock |
 | public GETs | 120/min/IP |
 | order DMs per authenticated inner buyer | 20/hour, excess rejected |
 | admitted gift wraps per merchant/relay | 300/min and queue depth 1,000; excess counted/dropped before decrypt |
@@ -1494,7 +1613,7 @@ pages load no third-party scripts.
 
 ## 16. Observability
 
-- Structured logs: `event=gammamarket.<component>.<action>` with ids/states; never
+- Structured logs: `event=gammamarkets.<component>.<action>` with ids/states; never
   keys, addresses, bolt11 strings in full (truncate to `payment_hash` correlation),
   or decrypted content.
 - Metrics hooks: outbox depth/age, inbox depth, relay health per merchant,
@@ -1586,9 +1705,10 @@ revisit only through a spec revision.
 2. **kind-17 receipt `amount`.** Buyer-claimed amount, stored for dispute display
    only. Receipt validity = `bolt11` match + `sha256(preimage) == payment_hash`;
    verified receipts set a cosmetic `receipt_verified` flag (§6.9).
-3. **Refund path.** v1 has no automated outbound payments — the extension never
-   holds spend-capable scope. Exceptional refunds are merchant-manual via the
-   LNbits wallet UI after `/resolve-exception {action:"refund"}` (§8.3).
+3. **Refund path and host privilege.** v1 implements no automated outgoing payment.
+   `refund` records a request and `confirm-refund` records merchant attestation after an
+   out-of-band wallet-UI refund (§8.3). A native extension shares host privilege, so this
+   is an enforced code policy and review gate—not a spend-capability sandbox.
 4. **`stock` tag truthfulness.** Publish `available` (`on_hand − reserved`); the
    reservation-volume leak is accepted — it is accurate sellable stock, which is
    what buyers need. No hysteresis in v1.
@@ -1632,42 +1752,75 @@ revisit only through a spec revision.
     use a URL fragment removed immediately; API requests use a redacted header (§5.4).
 18. **Third-party shipping.** Rejected in v1 because mutable third-party pricing cannot
     be quoted authoritatively; only same-merchant FK-backed references are accepted.
-19. **Migration single-writer.** The extension cannot detect arbitrary external writers.
-    New keys are default; same-key reuse is an explicit audited operator boundary (§13).
+19. **Migration single-writer.** A new key is identity separation, not inventory
+    separation. Every migration freezes old intake and reconciles or partitions every
+    still-payable inventory liability before imported stock becomes sellable (§13).
 20. **Collection ambiguity.** Every published product belongs to at least one 30405
     collection, satisfying the pinned Gamma required-component interpretation (§6.1).
-21. **Email transport.** v1 sends through the host's configured SMTP
-    (`lnbits_email_notifications_*`) — the extension stores no SMTP credentials and
-    accepts no merchant-supplied relay host. Per-merchant SMTP would duplicate a
-    server credential boundary for marginal benefit (§8.8).
-22. **Email bearer link.** Order status emails reuse the existing
-    `/gammamarket/order#<token>` magic link rather than a second credential; email
-    possession already equals status-view possession, so a separate token adds no
-    security (§8.8/§11.4).
+21. **Email transport.** v1 uses host SMTP and interprets `send_email` only as boolean
+    success versus unclassified failure. False/exception retries with a bound; it does
+    not invent transient-versus-5xx classification (§8.8).
+22. **Email bearer link.** Order status emails reuse
+    `/gammamarkets/order#<token>`. A protected encrypted token copy exists only for its
+    valid notification lifetime; hash lookup, revocation, and erasure remain authoritative
+    (§8.8/§11.4). Queue uniqueness dedupes intent, not SMTP delivery.
+23. **SDK qualification.** Host-resolved `nostr-sdk==0.44.8` is the Phase 0 candidate,
+    not an approved artifact. `PINS.md` freezes platform hashes, native provenance and
+    executable security/FFI/ACK results; no silent host downgrade is allowed (§2).
+24. **Cancellation race.** The payment projection and deterministic external id survive
+    cancellation. A returned or discovered invoice is attached for settlement detection
+    but never delivered and never reopens a cancelled order (§7.1/§8.2).
+25. **Runtime name.** Package, extension id, routes, hooks, environment variables,
+    payment correlation, and encryption AAD are frozen as `gammamarkets` before the
+    first migration or publication.
+26. **Transport adapters.** Qualified direct `nostr-sdk` is the baseline. `nostrclient`
+    and an uninspected `nostrrelay` are optional candidates only after satisfying the same
+    target-routing, positive-ACK, and authorization contract (§9.1).
+27. **External relay smoke test.** `wss://nostr.net` may receive only an ephemeral,
+    non-sensitive Phase 0 smoke event. It is neither a production default nor a substitute
+    for deterministic local accepting/rejecting/silent relay tests (§9.1).
+28. **FX boundary.** Uncached host provider results cross one explicit float-to-Decimal
+    adapter; all aggregation, units, freshness, persistence and ceiling conversion are
+    extension-owned and tested (§3.4).
+29. **Host lifecycle/security.** Start is bounded registration; readiness follows startup
+    reconciliation. Cleanup is cancellation-safe, route auth does not trust host CORS,
+    and audit redaction is a deployment qualification predicate (§5/§10).
 
 ---
 
 ## 22. OpenGSD implementation-readiness gate
 
-**Assessment: ready for OpenGSD project initialization and phase discussion/planning;
-not ready for direct implementation execution in this proposal-site repository.**
+**Assessment: ready for OpenGSD initialization and Phase 0 planning; not ready for
+production runtime implementation until Phase 0 acceptance passes.** Runtime code belongs
+in the separate `gammamarkets` repository, not this proposal site. Phase 0 builds isolated
+host/SDK probes, protocol fixtures, and executable state/schema models—not the production
+extension.
 
-The repository currently has no `.planning/`, roadmap, extension source tree, or test
-harness. OpenGSD reports `no-project` and recommends `new-project`. Before execution:
+| ID | Required Phase 0 acceptance |
+|---|---|
+| P0-01 pins | Resolve/import the approved host and SDK set on every claimed platform; record wheel/native hashes, source provenance and lockfile path; no silent downgrade or unapproved pin change. |
+| P0-02 SDK security | Repeated invalid/known-ID events never enter trusted processing; paused-signing AUTH bursts remain bounded; oversized NIP-44 input is rejected before full decode/allocation. Record the tested binary. |
+| P0-03 host contract | A fake funding backend proves invoice extension/external-id metadata, wallet correlation, exact lookup, listener registration, owned-handle cancellation and the absence of a durable callback-delivery promise. |
+| P0-04 relay ACK | Local accepting, rejecting and silent relays produce positive OK, negative OK and timeout without sending to unlisted relays. The optional `wss://nostr.net` smoke event is non-authoritative. |
+| P0-05 encrypted fixtures | Fixed kind-16 recipient/sender copies preserve rumor id across retry, use independent wrappers, route only to party relays and reject tampered outer/seal/rumor chains without logging plaintext. |
+| P0-06 transactions/fencing | Concurrent last-unit buyers yield one reservation; stale fenced writes fail; rollback is complete; host auto-commit helpers never split a domain transaction; SQLite FK enforcement works. Run SQLite and claimed PostgreSQL profiles. |
+| P0-07 cancellation race | Pause invoice creation; cancel from every allowed state; return success, timeout and settlement; restart. Stock releases once, correlation survives, cancelled never reopens, BOLT11 is not delivered, and no second invoice is created. |
+| P0-08 recovery closure | Restart at every order/inbox/outbox checkpoint including partial copies. Every row resumes or terminates explicitly; only missing targets retry; canonical rumor and ACK evidence survive. |
+| P0-09 email persistence | Two merchant recipients, revoked customer consent and confirmation delayed beyond idempotency retention prove per-recipient dedupe and protected token expiry/revocation without plaintext persistence or hash reversal. |
+| P0-10 SMTP boundary | Success, `False`, exception and recipient rejection stubs prove only `True` is sent; all failures use bounded unclassified retry and no logs expose recipient PII or bearer links. |
+| P0-11 NIP-89 route | A valid 30402 naddr resolves locally; malformed, wrong-kind and foreign references fail; relay hints never trigger an unvalidated fetch. |
+| P0-12 auth/privacy/lifecycle | ID-only and cross-origin cookie mutations fail; approved bearer/CSRF paths pass; audit capture redacts secrets; startup readiness and cancellation-safe task/SDK cleanup satisfy the qualified host profile. |
+| P0-13 Decimal/FX | Fractional minor-unit lines and mixed-currency shipping use approved Decimal units/ceiling; stale or provenance-free quotes fail before reservation; float-boundary error is measured and approved. |
+| P0-14 contract closure | All transitions, fields, routes, event fixtures, release gates and `gammamarkets` identifiers resolve with no undeclared dependency. |
 
-1. Choose/create the actual extension repository (recommended separate repo named
-   `gammamarket`; do not put Python extension runtime code in this static proposal site).
-2. Run OpenGSD new-project, then ingest this specification and the architecture proposal.
-3. Make Phase 0 the conformance profile: verify the pinned Python `nostr-sdk` FFI and
-   per-relay ACK behavior, finalize the reverse-domain label namespace, and create golden
-   valid/invalid fixtures—including the documented Gamma/NIP-99 frequency and physical-
-   address profile divergences.
-4. Discuss Release A as the first vertical MVP; do not plan all releases as one phase.
-5. Plan and execute only after Phase 0 acceptance tests exist. Release B additionally
-   requires a demonstrated egress-control deployment and external Gamma client fixture;
-   Release C requires an actual `nostrmarket` export/cutover rehearsal.
+Release A reruns applicable host/domain/security assertions through the real catalog,
+checkout, settlement, worker and notification implementation. Release B additionally
+requires deployed SSRF/egress controls, recipient-gated relay evidence, and an independent
+Gamma client flow. Release C requires literal NIP-15 fixtures and a cutover rehearsal with
+an old payable invoice against scarce stock. Release-B/C evidence is planned now but is
+not a prerequisite for Release A.
 
-Recommended OpenGSD sequence in the extension repo:
+Recommended OpenGSD sequence in the implementation repository:
 
 ```text
 /gsd:new-project
@@ -1678,5 +1831,6 @@ Recommended OpenGSD sequence in the extension repo:
 /gsd:execute-phase 0
 ```
 
-Execution readiness is gated—not blocked—by Phase 0. No unresolved payment, key-custody,
-state-machine, or relay-routing choice should be delegated implicitly to later code.
+Execution readiness is gated—not blocked—by Phase 0. No payment, key-custody,
+state-machine, notification, host-boundary, or relay-routing choice may be delegated
+implicitly to production code.
