@@ -4,10 +4,10 @@
 
 **Status:** Supporting rationale synchronized with the corrected Phase 0 contract
 **Extension ID:** `gammamarkets`
-**Implementation:** Standard Python LNbits extension  
-**Primary protocol:** GammaMarkets marketplace protocol  
-**Compatibility protocols:** NIP-99 Classified Listings and NIP-15 Nostr Marketplace  
-**Payment backend:** LNbits wallets and Lightning invoices  
+**Implementation:** Standard Python LNbits extension
+**Primary protocol:** GammaMarkets marketplace protocol
+**Compatibility protocols:** NIP-99 Classified Listings and NIP-15 Nostr Marketplace
+**Payment backend:** LNbits wallets and Lightning invoices
 **Protocol references:**
 
 - [GammaMarkets market specification](https://github.com/GammaMarkets/market-spec/blob/main/spec.md)
