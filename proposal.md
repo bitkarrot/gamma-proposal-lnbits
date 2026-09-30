@@ -4,6 +4,29 @@ Status: proposal
 Verified against: `~/github/lnbits` dev branch (`v1.6.2-rc1`, commit `e336fe1`)
 Companion research: `research.md`
 
+## limitations blocker
+
+Summary of WASM-runtime gaps that blocked or constrained this proposal, kept for
+future reference. All verified against `lnbits/core/wasm_ext/` on `dev`
+(`v1.6.2-rc1`, commit `e336fe1`).
+
+| Limitation | Impact | Workaround |
+|---|---|---|
+| No outbound WebSocket; `http.request` is HTTPS-only | **The hard blocker.** Cannot reach Nostr relays (`wss://`). `nostrclient` cannot bridge it either — its Nostr I/O is itself a WebSocket and its HTTP `/api/` routes are admin-only relay CRUD. | Browser transport: WASM signs, merchant UI JS sends `["EVENT", ...]` over WSS (§3). Outbox table covers republishes while UI is closed. |
+| No cron/scheduler/timers | `events.onInvoicePaid` is the only event. No background workers → no server-side outbox drain, relay polling, or retry queues. | Drain outbox when merchant opens UI; upstream `POST /nostrclient/api/v1/publish` (§6) would remove this. |
+| No secrets/env access | WASM cannot see `.env`; no secrets manifest field. No safe place for SMTP credentials or third-party API keys. | None in-sandbox; merchant nsec lives in `ext.storage` instead. |
+| No Nostr host API | No `nostr.*` host call and no signing function. | Implement BIP-340 schnorr + NIP-17/NIP-44 crypto inside the module (§4.3). |
+| No email/notification host call | The Python spec sends order emails via `lnbits.core.services.notifications.send_email` (host SMTP). No equivalent WASM permission exists — and even an external HTTPS mail API via `http.request` is blocked by the missing secrets mechanism and the lack of a worker for the retry queue. | Not feasible in WASM; requires a Python extension or a new host API. |
+| KV-document storage only | No SQL or migrations — cannot express the relational schema (indexes, encrypted columns) required by the technical specification. | Accepted: denormalized document tables (§4.2). |
+| `http.request` constraints | HTTPS-only, per-origin allowlist, SSRF-protected, 64KB max body, ~20 calls per invocation. | Mostly irrelevant with browser transport. |
+| `websocket.*` is an internal UI hub | `websocket.publish`/`subscribe` reach browsers only — not relay connections. | — |
+| Resource limits | Execution time, host/storage calls, memory, fuel, and response bytes are all capped (§5). | Chunk batch work (~50 products per invocation); limits are admin-tunable. |
+| Event-context auth uncertainty | Which host calls are legal inside `onInvoicePaid` is unverified (§8). | Test early in Phase 0. |
+
+Note: this document predates the email-notification feature (added later in
+`technical-specification.md` §8.8), which is why email is absent from the
+design — the WASM runtime could not support it regardless.
+
 ## 1. Goal
 
 A standalone LNbits **WASM extension** that lets a merchant manage products once and
